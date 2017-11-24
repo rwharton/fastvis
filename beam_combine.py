@@ -5,6 +5,9 @@ import glob
 import npy2psrfits as npsr 
 import os
 import re
+import multiprocessing
+from contextlib import closing
+
 
 def data_cross_check(t0, freqs0, dat0, t1, freqs1, dat1):
     if len(t0) != len(t1):
@@ -91,28 +94,6 @@ def combine_one_fullband_beam_fromlist(beam_files, beam_num):
     return dat
 
 
-def combine_and_save_fullband_beams(basename, bnum_list, use_real=True, out_type=None):
-    for bnum in bnum_list:
-        print("Working on beam %04d" %bnum)
-
-        tt, dat = combine_one_fullband_beam(basename, bnum)
-        outname = "%s_beam%04d.npy" %(basename, bnum)
-        print("...write to %s" %outname)
-
-        if use_real:
-            dat = np.real(dat)
-        else: pass
-
-        if out_type is not None:
-            dat = dat.astype(out_type)
-        else: pass
-
-        np.save(outname, dat)
-        print("...done.")
-
-    return
-
-
 def get_step_nums(basename):
     tt_files = glob.glob("%s_tt_step*.npy" %(basename))
     tt_files.sort()
@@ -122,64 +103,95 @@ def get_step_nums(basename):
     return tnums
 
 
-def combine_beams_to_psrfits_save(basename, src_base, bnum_list, beam_list,
-                                  use_real=True, out_type=None, 
-                                  keep_npy=False, obs_params={}):
+def beam2fits(bnum, step_nums, Nskip, full_freqs, yy, basename, src_base, 
+              bnum_list, beam_list, use_real, out_type, keep_npy, 
+              obs_params):
+    # Beam string (will use this a lot)
+    bstr = "beam%04d" %(bnum)
+    print("Working on %s" %bstr)
 
-    step_nums = get_step_nums(basename)
+    # Step files are in beamXXXX sub-directories
+    step_files = ["%s/%s_%s_step%03d.npy" %(bstr, basename, bstr, snum) \
+                      for snum in step_nums ]
 
-    for bnum in bnum_list:
-        print("Working on beam %04d" %bnum)
-        step_files = ["%s_beam%04d_step%03d.npy" %(basename, bnum, snum) \
-                          for snum in step_nums ]
+    tmp_dat = combine_one_fullband_beam_fromlist(step_files, bnum)
+    dat = np.zeros( (len(tmp_dat), len(full_freqs)) )
+    dat[:, yy] = tmp_dat[:]
+    
+    if use_real:
+        dat = np.real(dat)
+    else: pass
 
-        dat = combine_one_fullband_beam_fromlist(step_files, bnum)
-        
-        if use_real:
-            dat = np.real(dat)
-        else: pass
+    if out_type is not None:
+        dat = dat.astype(out_type)
+    else: pass
 
-        if out_type is not None:
-            dat = dat.astype(out_type)
-        else: pass
+    # Skipping Nsec seconds in data
+    if Nskip > 0:
+        dat = dat[Nskip:]
+        print("\nSkipping %.2f seconds !!!\n" %(Nskip * obs_params['dt']))
+    else:
+        pass
 
-        npy_file = "%s_beam%04d.npy" %(basename, bnum)
-        print("...write to %s" %npy_file)
-        np.save(npy_file, dat)
-        print("...done.")
+    npy_file = "%s/%s_%s.npy" %(bstr, basename, bstr)
+    print("...write to %s" %npy_file)
+    np.save(npy_file, dat)
+    print("...done.")
 
-        outname = "%s_beam%04d" %(basename, bnum)
-        src_name, ra_str, dec_str = source_info_from_beamlist(beam_list, bnum, src_base)
+    outname = "%s_%s" %(basename, bstr)
+    src_name, ra_str, dec_str = source_info_from_beamlist(beam_list, bnum, 
+                                                          src_base)
 
-        print("BEAM%04d" %bnum)
-        print("  %s" %npy_file)
-        print("  %s" %outname)
-        print("  (%s, %s, %s)" %(src_name, ra_str, dec_str))
+    print("BEAM%04d" %bnum)
+    print("  %s" %npy_file)
+    print("  %s" %outname)
+    print("  (%s, %s, %s)" %(src_name, ra_str, dec_str))
 
-        npsr.convert_npy_to_psrfits(npy_file, outname, 
-                                    src_name=src_name, ra_str=ra_str, dec_str=dec_str, 
-                                    **obs_params)
+    npsr.convert_npy_to_psrfits(npy_file, outname, src_name=src_name, 
+                                ra_str=ra_str, dec_str=dec_str, 
+                                **obs_params)
 
-        if keep_npy:
-            pass
-        else:
-            os.remove(npy_file)
-
+    if keep_npy:
+        pass
+    else:
+        os.remove(npy_file)
     return
 
+
+def beam2fits_multi(nproc, group_bnums, step_nums, Nskip, full_freqs, yy,
+                    basename, src_base, bnum_list, beam_list, use_real, 
+                    out_type, keep_npy, obs_params):
+
+    with closing(multiprocessing.Pool(processes=nproc)) as pool:
+
+        results = [pool.apply_async(beam2fits, 
+                   args=(bnum, step_nums, Nskip, full_freqs, yy, basename, 
+                         src_base, bnum_list, beam_list, use_real, 
+                         out_type, keep_npy, obs_params)\
+                                   ) for bnum in group_bnums]
+            
+        all_beams = [p.get() for p in results]
+    return
+
+
+def get_beam_groups(bnum_list, n):
+    Nb = len(bnum_list)
+    beam_groups = [ bnum_list[ii : ii + n] for ii in xrange(0, Nb, n) ]
+    return beam_groups
 
 
 def combine_beams_to_psrfits(basename, src_base, bnum_list, beam_list,
                              use_real=True, out_type=None, 
                              keep_npy=False, obs_params={}, 
-                             skip_sec=0.0):
+                             skip_sec=0.0, nproc=1):
 
     step_nums = get_step_nums(basename)
 
     freqs = get_all_freqs(basename)
     full_freqs, yy = get_freq_mapping(freqs)
-    print("Freqs: (%.2f, %.2f, %.2f) -- %d" %(full_freqs[0], full_freqs[-1], 
-                                              np.diff(full_freqs)[0], len(full_freqs)))
+    print("Freqs: (%.2f, %.2f, %.2f) -- %d" %(\
+            full_freqs[0], full_freqs[-1], 
+            np.diff(full_freqs)[0], len(full_freqs)))
 
     # Skipping Nsec seconds
     dt = obs_params['dt']
@@ -189,52 +201,14 @@ def combine_beams_to_psrfits(basename, src_base, bnum_list, beam_list,
     else:
         Nskip = 0
 
-    for bnum in bnum_list:
-        print("Working on beam %04d" %bnum)
-        step_files = ["%s_beam%04d_step%03d.npy" %(basename, bnum, snum) \
-                          for snum in step_nums ]
+    beam_groups = get_beam_groups(bnum_list, nproc)
 
-        tmp_dat = combine_one_fullband_beam_fromlist(step_files, bnum)
-        dat = np.zeros( (len(tmp_dat), len(full_freqs)) )
-        dat[:, yy] = tmp_dat[:]
-        
-        if use_real:
-            dat = np.real(dat)
-        else: pass
-
-        if out_type is not None:
-            dat = dat.astype(out_type)
-        else: pass
-
-        # Skipping Nsec seconds in data
-        if Nskip > 0:
-            dat = dat[Nskip:]
-            print("\nSkipping %.2f seconds !!!\n" %(Nskip * dt))
-        else:
-            pass
-
-        npy_file = "%s_beam%04d.npy" %(basename, bnum)
-        print("...write to %s" %npy_file)
-        np.save(npy_file, dat)
-        print("...done.")
-
-        outname = "%s_beam%04d" %(basename, bnum)
-        src_name, ra_str, dec_str = source_info_from_beamlist(beam_list, bnum, src_base)
-
-        print("BEAM%04d" %bnum)
-        print("  %s" %npy_file)
-        print("  %s" %outname)
-        print("  (%s, %s, %s)" %(src_name, ra_str, dec_str))
-
-        npsr.convert_npy_to_psrfits(npy_file, outname, 
-                                    src_name=src_name, ra_str=ra_str, dec_str=dec_str, 
-                                    **obs_params)
-
-        if keep_npy:
-            pass
-        else:
-            os.remove(npy_file)
-
+    for group_bb in beam_groups:
+        print(group_bb)
+        beam2fits_multi(nproc, group_bb, step_nums, Nskip, full_freqs, yy,
+                        basename, src_base, bnum_list, beam_list, 
+                        use_real=use_real, out_type=out_type, 
+                        keep_npy=keep_npy, obs_params=obs_params)
     return
     
 

@@ -83,6 +83,7 @@ if __name__ == "__main__":
         
     
     if do_fits:
+        fits_proc = proc_kwargs['nproc']
         tt, freqs = bc.get_freqs_and_times(basename)
         tmjd = np.load("%s_mjd_start.npy" %basename)
         mjd_start = tmjd[0]
@@ -108,7 +109,7 @@ if __name__ == "__main__":
 
         bc.combine_beams_to_psrfits(basename, src_base, beam_nums, beam_list,
                                     out_type=np.float32, keep_npy=False,
-                                    obs_params=obs_params, skip_sec=skip_sec)
-
+                                    obs_params=obs_params, skip_sec=skip_sec,
+                                    nproc=fits_proc)
 
     print("STOP")
