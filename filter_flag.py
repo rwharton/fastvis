@@ -18,7 +18,7 @@ def get_data(infile):
     return freqs, dd
 
 
-def apply_changes(infile, outfile, dd):
+def apply_changes(infile, outfile, dd, avgs=None):
     hdulist = fits.open(infile)
     hdu = hdulist[1]
     freqs = hdu.data[0]['dat_freq']
@@ -26,6 +26,17 @@ def apply_changes(infile, outfile, dd):
 
     dd_out = np.reshape(dd, dat.shape)
     hdu.data[:]['data'] = dd_out[:]
+
+    if avgs is not None:
+        if len(avgs) != len(freqs):
+            print("Avgs are wrong shape!")
+            print("len(avgs) = %d" %(len(avgs)))
+            print("len(freqs) = %d" %(len(freqs)))
+        else: pass
+        offs = np.outer( np.ones(dd_out.shape[0]), avgs )
+        hdu.data[:]['dat_offs'] = offs[:]
+    else: 
+        pass
 
     hdulist.writeto(outfile)
     hdulist.close()
@@ -43,13 +54,6 @@ def equiv_sig_normal(prob):
     pp = 0.5 * (1 - erf(x / np.sqrt(2)))
     sig = x[np.argmin( np.abs(pp - prob) )]
     return sig
-
-
-def get_model(x, theta):
-    a, mu, sig = theta 
-    a *= 1e3
-    y = a * np.exp(-(x - mu)**2.0 / (2 * sig**2.0))
-    return y
 
 
 ## SPECIAL EXP FUNCTIONS ##
@@ -260,7 +264,9 @@ def filter_FITS(infile, outfile):
     dd = filter_chans(dd, avgs, sigs, sig_max=5)
     xx_mask = get_mask_chans()
     dd = apply_mask(dd, xx_mask)
-    apply_changes(infile, outfile, dd)
+    avgs_masked = avgs[:]
+    avgs_masked[xx_mask] = 0
+    apply_changes(infile, outfile, dd, avgs=avgs_masked)
     return
 
 
